@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Baby Nap Predictor</title>
+  <style>
+    body {font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; background:#f6f7f9; padding:24px; max-width:720px; margin:auto;}
+    h1{font-size:1.4rem;margin-bottom:6px;} 
+
+    section{margin-top:20px;position:relative;}
+    .future,.now,.past,.advanced{background:#f8fafc;border-radius:20px;padding:20px;box-shadow:0 6px 20px rgba(0,0,0,.06);}    
+
+    .future-time{font-size:2.6rem;font-weight:700;margin-top:12px;text-align:center;font-variant-numeric:tabular-nums;}
+    .future-sub{margin-top:8px;font-size:.9rem;color:#6b7280;text-align:center;}
+
+    label{display:block;margin-top:12px;font-weight:600;} 
+    input{margin-top:6px;padding:10px;width:100%;font-size:1rem;border-radius:10px;border:1px solid #ccc;}
+    button{margin-top:12px;width:100%;padding:14px;font-size:1rem;border-radius:12px;border:none;cursor:pointer;font-weight:600;}
+
+    .primary-btn{background:#111827;color:#fff;} 
+    .secondary-btn{background:#e5e7eb;color:#111827;} 
+    .ghost{background:#e5e7eb;color:#111827;} 
+    .danger{background:#ef4444;color:#fff;}
+
+    .row{display:flex;gap:8px;} .row button{flex:1;}
+
+    .stopwatch{margin-top:16px;padding:18px;border-radius:16px;background:#f1f5f9;color:#111827;text-align:center;font-variant-numeric:tabular-nums;box-shadow:0 8px 24px rgba(0,0,0,.08);}    
+    .stopwatch .label{font-size:.75rem;opacity:.7;letter-spacing:.12em;} 
+    .stopwatch .time{font-size:2.4rem;font-weight:700;letter-spacing:1px;}
+
+    .history-item{display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px;}
+    .history-actions{display:flex;gap:6px;}
+    .history-actions button{padding:4px 6px;font-size:.7rem;border-radius:6px;}
+
+    .hint{font-size:.85rem;color:#6b7280;margin-top:6px;}
+
+    .module-title{position:absolute;top:12px;left:16px;font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;color:#6b7280;font-weight:600;}
+  </style>
+</head>
+<body>
+<h1>💤 Baby Nap Predictor</h1>
+
+<section class="future">
+  <div class="module-title">NEXT NAP</div>
+  <div id="heroPrediction" class="future-time">—</div>
+  <div id="heroAccuracy" class="future-sub"></div>
+</section>
+
+<section class="now">
+  <div class="module-title">NOW</div>
+  <div class="row">
+    <button class="primary-btn" onclick="startSleep()">▶︎ Start</button>
+    <button class="secondary-btn" onclick="endSleep()">⏹ Wake</button>
+  </div>
+
+  <div id="liveTimer" class="stopwatch" style="display:none">
+    <div class="label">SLEEPING</div>
+    <div class="time" id="liveClock">00:00:00</div>
+    <details style="margin-top:8px">
+      <summary class="hint">Adjust start time</summary>
+      <input type="datetime-local" id="adjustStart" />
+      <button class="ghost" onclick="adjustActiveStart()">Apply</button>
+    </details>
+  </div>
+</section>
+
+<section class="past">
+  <div class="module-title">EARLIER TODAY</div>
+  <div id="nightList"></div>
+  <div style="height:8px"></div>
+  <div id="napList"></div>
+
+  <details id="manualDetails" style="margin-top:12px">
+    <summary style="font-weight:600;cursor:pointer">✍️ Manual entry</summary>
+    <label>Sleep start</label>
+    <input type="datetime-local" id="manualStart" />
+    <label>Wake time</label>
+    <input type="datetime-local" id="manualEnd" />
+    <button type="button" onclick="saveManual()">Save manual sleep</button>
+    <div id="manualFeedback" class="hint"></div>
+  </details>
+</section>
+
+<section class="advanced">
+  <div class="module-title">ADVANCED</div>
+  <div class="row">
+    <button class="secondary-btn" onclick="resetDay()">Start a new day</button>
+    <button onclick="exportCSV()">Export CSV</button>
+  </div>
+</section>
+
+<script>
+const HISTORY_KEY = 'sleep_history_ui_v9';
+const PRED_KEY = 'last_prediction_ui_v9';
+
+let sleepHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+let activeSleepStart = null;
+let timer = null;
+let editingIndex = null;
+
+function startSleep() {
+  if (activeSleepStart) return;
+  const now = new Date();
+  evaluatePrediction(now);
+  activeSleepStart = now;
+  document.getElementById('adjustStart').value = now.toISOString().slice(0,16);
+  document.getElementById('liveTimer').style.display = 'block';
+  timer = setInterval(updateTimer, 1000);
+  updateTimer();
+}
+
+function updateTimer() {
+  if (!activeSleepStart) return;
+  const diff = Math.floor((Date.now() - activeSleepStart.getTime()) / 1000);
+  const h = String(Math.floor(diff / 3600)).padStart(2,'0');
+  const m = String(Math.floor((diff % 3600) / 60)).padStart(2,'0');
+  const s = String(diff % 60).padStart(2,'0');
+  document.getElementById('liveClock').innerText = `${h}:${m}:${s}`;
+}
+
+function adjustActiveStart() {
+  if (!activeSleepStart) return;
+  const val = document.getElementById('adjustStart').value;
+  if (!val) return;
+  const corrected = new Date(val);
+  if (corrected >= new Date()) return;
+
+  // 🔁 re-evaluate prediction using corrected start time
+  evaluatePrediction(corrected);
+
+  activeSleepStart = corrected;
+  updateTimer();
+}
+
+function endSleep() {
+  if (!activeSleepStart) return;
+  clearInterval(timer);
+  const start = new Date(activeSleepStart);
+  const end = new Date();
+  activeSleepStart = null;
+  document.getElementById('liveTimer').style.display = 'none';
+  commitSleep(start, end);
+}
+
+function saveManual() {
+  try {
+    const s = document.getElementById('manualStart').value;
+    const e = document.getElementById('manualEnd').value;
+    if (!s || !e) {
+      alert('Please enter both start and end time');
+      return;
+    }
+
+    const start = new Date(s);
+    const end = new Date(e);
+    if (isNaN(start) || isNaN(end) || end <= start) {
+      alert('Invalid time range');
+      return;
+    }
+
+    // evaluate prediction at sleep START
+    evaluatePrediction(start);
+
+    const record = {
+      start: start.toISOString(),
+      end: end.toISOString(),
+      durationMin: Math.round((end - start) / 60000)
+    };
+
+    if (editingIndex !== null) {
+      sleepHistory[editingIndex] = record;
+      editingIndex = null;
+    } else {
+      sleepHistory.push(record);
+    }
+
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(sleepHistory));
+
+    document.getElementById('manualStart').value = '';
+    document.getElementById('manualEnd').value = '';
+    document.getElementById('manualFeedback').innerText = 'Saved ✓';
+    setTimeout(() => document.getElementById('manualFeedback').innerText = '', 1200);
+    document.getElementById('manualDetails').open = false;
+
+    renderHistory();
+    runPrediction(end);
+  } catch (err) {
+    console.error('Manual entry failed:', err);
+    alert('Something went wrong while saving. Please try again.');
+  }
+}
+
+function editSleep(index) {
+  const e = sleepHistory[index];
+  document.getElementById('manualStart').value = e.start.slice(0,16);
+  document.getElementById('manualEnd').value = e.end.slice(0,16);
+  document.getElementById('manualDetails').open = true;
+  editingIndex = index;
+}
+
+function deleteSleep(index) {
+  if (!confirm('Delete this sleep?')) return;
+  sleepHistory.splice(index, 1);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(sleepHistory));
+  renderHistory();
+}
+
+function commitSleep(start, end) {
+  const dur = Math.round((end - start) / 60000);
+  if (dur <= 0) return;
+  sleepHistory.push({ start: start.toISOString(), end: end.toISOString(), durationMin: dur });
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(sleepHistory));
+  renderHistory();
+  runPrediction(end);
+}
+
+function runPrediction(wakeTime) {
+  const pred = new Date(wakeTime.getTime() + 110 * 60000);
+  localStorage.setItem(PRED_KEY, pred.toISOString());
+  document.getElementById('heroPrediction').innerText = pred.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function evaluatePrediction(actualSleepStart) {
+  const stored = localStorage.getItem(PRED_KEY);
+  if (!stored) return;
+  const predicted = new Date(stored);
+  const diffMin = Math.round(Math.abs(actualSleepStart - predicted) / 60000);
+  let text = '';
+  if (diffMin <= 5) text = 'Very accurate';
+  else if (diffMin <= 10) text = 'Accurate';
+  else text = 'Off';
+  document.getElementById('heroAccuracy').innerText = `Prediction: ${text}`;
+}
+
+function isNightSleep(start, end) {
+  const s = new Date(start);
+  const e = new Date(end);
+  const nightStart = new Date(s);
+  nightStart.setHours(19,0,0,0);
+  const nightEnd = new Date(s);
+  nightEnd.setDate(nightEnd.getDate() + 1);
+  nightEnd.setHours(7,0,0,0);
+  return ((s >= nightStart) || (s < nightStart && e > nightStart)) && e >= nightEnd;
+}
+
+function renderHistory() {
+  const nightList = document.getElementById('nightList');
+  const napList = document.getElementById('napList');
+  if (!sleepHistory.length) {
+    nightList.innerHTML = '<div class="hint">No sleeps logged yet.</div>';
+    napList.innerHTML = '';
+    return;
+  }
+  const items = sleepHistory.map((e, i) => ({ e, i })).reverse();
+  const nightItems = items.filter(({ e }) => isNightSleep(e.start, e.end));
+  const napItems = items.filter(({ e }) => !isNightSleep(e.start, e.end));
+
+  nightList.innerHTML = nightItems.length
+    ? `<div class="hint" style="margin-bottom:6px">🌙 Night sleep</div>` + nightItems.map(({ e, i }) =>
+        `<div class="history-item">
+          <div class="hint">${new Date(e.start).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} – ${new Date(e.end).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} · ${e.durationMin} min</div>
+          <div class="history-actions">
+            <button class="ghost" onclick="editSleep(${i})">Edit</button>
+            <button class="danger" onclick="deleteSleep(${i})">Delete</button>
+          </div>
+        </div>`
+      ).join('')
+    : '<div class="hint">🌙 No night sleep yet</div>';
+
+  napList.innerHTML = napItems.length
+    ? `<div class="hint" style="margin-bottom:6px">☀️ Naps</div>` + napItems.map(({ e, i }) =>
+        `<div class="history-item">
+          <div class="hint">${new Date(e.start).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} – ${new Date(e.end).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} · ${e.durationMin} min</div>
+          <div class="history-actions">
+            <button class="ghost" onclick="editSleep(${i})">Edit</button>
+            <button class="danger" onclick="deleteSleep(${i})">Delete</button>
+          </div>
+        </div>`
+      ).join('')
+    : '<div class="hint">☀️ No naps yet</div>';
+}
+
+function exportCSV() {
+  const rows = [['Start','End','Duration']].concat(
+    sleepHistory.map(e => [e.start, e.end, e.durationMin])
+  );
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'baby_sleep_data.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+renderHistory();
+if (sleepHistory.length > 0) {
+  const last = sleepHistory[sleepHistory.length - 1];
+  if (last && last.end) runPrediction(new Date(last.end));
+}
+
+function resetDay() {
+  if (!confirm('Start a new day? This will clear today\'s visible history.')) return;
+  sleepHistory = [];
+  localStorage.removeItem(HISTORY_KEY);
+  document.getElementById('heroPrediction').innerText = '—';
+  document.getElementById('heroAccuracy').innerText = '';
+  renderHistory();
+}
+</script>
+</body>
+</html>
