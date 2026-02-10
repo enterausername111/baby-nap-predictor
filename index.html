@@ -29,7 +29,7 @@
     .stopwatch .label{font-size:.75rem;opacity:.7;letter-spacing:.12em;} 
     .stopwatch .time{font-size:2.4rem;font-weight:700;letter-spacing:1px;}
 
-    .history-item{display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px;}
+    .history-item{display:flex;justify-content:space-between;align-items:center;margin-top:6px;padding:0;gap:8px;}
     .history-actions{display:flex;gap:6px;}
     .history-actions button{padding:4px 6px;font-size:.7rem;border-radius:6px;}
 
@@ -66,7 +66,7 @@
 </section>
 
 <section class="past">
-  <div class="module-title">EARLIER TODAY</div>
+  <div class="module-title" style="margin-bottom:12px">EARLIER TODAY</div>
   <div id="nightList"></div>
   <div style="height:8px"></div>
   <div id="napList"></div>
@@ -257,7 +257,7 @@ function renderHistory() {
   const napItems = items.filter(({ e }) => !isNightSleep(e.start, e.end));
 
   nightList.innerHTML = nightItems.length
-    ? `<div class="hint" style="margin-bottom:6px">🌙 Night sleep</div>` + nightItems.map(({ e, i }) =>
+    ? `<div class="hint" style="margin-bottom:8px;margin-top:18px">🌙 Night sleep</div>` + nightItems.map(({ e, i }) =>
         `<div class="history-item">
           <div class="hint">${new Date(e.start).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} – ${new Date(e.end).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} · ${e.durationMin} min</div>
           <div class="history-actions">
@@ -269,7 +269,7 @@ function renderHistory() {
     : '<div class="hint">🌙 No night sleep yet</div>';
 
   napList.innerHTML = napItems.length
-    ? `<div class="hint" style="margin-bottom:6px">☀️ Naps</div>` + napItems.map(({ e, i }) =>
+    ? `<div class="hint" style="margin-bottom:8px;margin-top:18px">☀️ Naps</div>` + napItems.map(({ e, i }) =>
         `<div class="history-item">
           <div class="hint">${new Date(e.start).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} – ${new Date(e.end).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} · ${e.durationMin} min</div>
           <div class="history-actions">
