@@ -50,8 +50,7 @@
 <section class="now">
   <div class="module-title">NOW</div>
   <div class="row">
-    <button class="primary-btn" onclick="startSleep()">▶︎ Start</button>
-    <button class="secondary-btn" onclick="endSleep()">⏹ Wake</button>
+    <button id="sleepToggleBtn" class="primary-btn" onclick="toggleSleep()">▶︎ Start</button>
   </div>
 
   <div id="liveTimer" class="stopwatch" style="display:none">
@@ -102,6 +101,25 @@ let activeSleepStart = null;
 let timer = null;
 let editingIndex = null;
 
+function updateSleepButtonState() {
+  const btn = document.getElementById('sleepToggleBtn');
+  if (!btn) return;
+  if (activeSleepStart) {
+    btn.classList.remove('primary-btn');
+    btn.classList.add('secondary-btn');
+    btn.innerText = '⏹ Wake';
+  } else {
+    btn.classList.remove('secondary-btn');
+    btn.classList.add('primary-btn');
+    btn.innerText = '▶︎ Start';
+  }
+}
+
+function toggleSleep() {
+  if (activeSleepStart) endSleep();
+  else startSleep();
+}
+
 function startSleep() {
   if (activeSleepStart) return;
   const now = new Date();
@@ -111,6 +129,7 @@ function startSleep() {
   document.getElementById('liveTimer').style.display = 'block';
   timer = setInterval(updateTimer, 1000);
   updateTimer();
+  updateSleepButtonState();
 }
 
 function updateTimer() {
@@ -143,6 +162,7 @@ function endSleep() {
   const end = new Date();
   activeSleepStart = null;
   document.getElementById('liveTimer').style.display = 'none';
+  updateSleepButtonState();
   commitSleep(start, end);
 }
 
@@ -380,6 +400,7 @@ function exportCSV() {
 }
 
 renderHistory();
+updateSleepButtonState();
 if (sleepHistory.length > 0) {
   const last = sleepHistory[sleepHistory.length - 1];
   if (last && last.end) runPrediction(new Date(last.end));
