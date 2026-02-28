@@ -50,8 +50,7 @@
 <section class="now">
   <div class="module-title">NOW</div>
   <div class="row">
-    <button class="primary-btn" onclick="startSleep()">▶︎ Start</button>
-    <button class="secondary-btn" onclick="endSleep()">⏹ Wake</button>
+    <button id="sleepToggleBtn" class="primary-btn" onclick="toggleSleep()">▶︎ Start</button>
   </div>
 
   <div id="liveTimer" class="stopwatch" style="display:none">
@@ -74,10 +73,11 @@
   <details id="manualDetails" style="margin-top:12px">
     <summary style="font-weight:600;cursor:pointer">✍️ Manual entry</summary>
     <label>Sleep start</label>
-    <input type="datetime-local" id="manualStart" />
+    <input type="time" id="manualStart" />
     <label>Wake time</label>
-    <input type="datetime-local" id="manualEnd" />
+    <input type="time" id="manualEnd" />
     <button type="button" onclick="saveManual()">Save manual sleep</button>
+    <div class="hint">Only time is needed. Date defaults to today.</div>
     <div id="manualFeedback" class="hint"></div>
   </details>
 </section>
@@ -93,11 +93,34 @@
 <script>
 const HISTORY_KEY = 'sleep_history_ui_v9';
 const PRED_KEY = 'last_prediction_ui_v9';
+const BABY_PROFILE = '6 months';
+const DEFAULT_WAKE_WINDOW_MIN = 150;
+const MIN_WAKE_WINDOW_MIN = 105;
+const MAX_WAKE_WINDOW_MIN = 220;
 
 let sleepHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
 let activeSleepStart = null;
 let timer = null;
 let editingIndex = null;
+
+function updateSleepButtonState() {
+  const btn = document.getElementById('sleepToggleBtn');
+  if (!btn) return;
+  if (activeSleepStart) {
+    btn.classList.remove('primary-btn');
+    btn.classList.add('secondary-btn');
+    btn.innerText = '⏹ Wake';
+  } else {
+    btn.classList.remove('secondary-btn');
+    btn.classList.add('primary-btn');
+    btn.innerText = '▶︎ Start';
+  }
+}
+
+function toggleSleep() {
+  if (activeSleepStart) endSleep();
+  else startSleep();
+}
 
 function startSleep() {
   if (activeSleepStart) return;
@@ -108,6 +131,7 @@ function startSleep() {
   document.getElementById('liveTimer').style.display = 'block';
   timer = setInterval(updateTimer, 1000);
   updateTimer();
+  updateSleepButtonState();
 }
 
 function updateTimer() {
@@ -140,7 +164,26 @@ function endSleep() {
   const end = new Date();
   activeSleepStart = null;
   document.getElementById('liveTimer').style.display = 'none';
+  updateSleepButtonState();
   commitSleep(start, end);
+}
+
+function parseTimeInputToDate(timeValue, baseDate = new Date()) {
+  const [hourText, minuteText] = timeValue.split(':');
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+
+  const date = new Date(baseDate);
+  date.setHours(hour, minute, 0, 0);
+  return date;
+}
+
+function formatDateForTimeInput(dateValue) {
+  const d = new Date(dateValue);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 function saveManual() {
@@ -152,11 +195,18 @@ function saveManual() {
       return;
     }
 
-    const start = new Date(s);
-    const end = new Date(e);
-    if (isNaN(start) || isNaN(end) || end <= start) {
-      alert('Invalid time range');
+    const editBaseDate = editingIndex !== null
+      ? new Date(sleepHistory[editingIndex].start)
+      : new Date();
+    const start = parseTimeInputToDate(s, editBaseDate);
+    const end = parseTimeInputToDate(e, editBaseDate);
+    if (!start || !end) {
+      alert('Invalid time format');
       return;
+    }
+
+    if (end <= start) {
+      end.setDate(end.getDate() + 1);
     }
 
     // evaluate prediction at sleep START
@@ -193,8 +243,8 @@ function saveManual() {
 
 function editSleep(index) {
   const e = sleepHistory[index];
-  document.getElementById('manualStart').value = e.start.slice(0,16);
-  document.getElementById('manualEnd').value = e.end.slice(0,16);
+  document.getElementById('manualStart').value = formatDateForTimeInput(e.start);
+  document.getElementById('manualEnd').value = formatDateForTimeInput(e.end);
   document.getElementById('manualDetails').open = true;
   editingIndex = index;
 }
@@ -215,22 +265,147 @@ function commitSleep(start, end) {
   runPrediction(end);
 }
 
+function clampMinutes(value, min, max) {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function getNapHistoryBefore(referenceTime) {
+  return sleepHistory
+    .filter((entry) => !isNightSleep(entry.start, entry.end))
+    .filter((entry) => new Date(entry.end) <= referenceTime)
+    .sort((a, b) => new Date(a.end) - new Date(b.end));
+}
+
+function average(values) {
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function median(values) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function calculateWakeWindow(wakeTime) {
+  const naps = getNapHistoryBefore(wakeTime);
+  const napsToday = naps.filter((nap) => new Date(nap.end).toDateString() === wakeTime.toDateString());
+  const nextNapIndex = napsToday.length + 1;
+
+  // 6-month profile: usually ~3 naps with ~2h to 3h40 wake windows
+  const sweetSpotByNapIndex = [120, 150, 180, 195];
+  const baseByIndex = sweetSpotByNapIndex[Math.min(nextNapIndex - 1, sweetSpotByNapIndex.length - 1)] || DEFAULT_WAKE_WINDOW_MIN;
+
+  const recentWakeWindows = [];
+  for (let i = 1; i < naps.length; i += 1) {
+    const prevWake = new Date(naps[i - 1].end).getTime();
+    const nextSleep = new Date(naps[i].start).getTime();
+    const wakeWindow = (nextSleep - prevWake) / 60000;
+    if (wakeWindow > 20 && wakeWindow < 360) recentWakeWindows.push(wakeWindow);
+  }
+
+  const recentWindow = average(recentWakeWindows.slice(-4));
+
+  const byDay = {};
+  naps.forEach((nap) => {
+    const dayKey = new Date(nap.start).toDateString();
+    if (!byDay[dayKey]) byDay[dayKey] = [];
+    byDay[dayKey].push(nap);
+  });
+
+  const sameIndexWindows = [];
+  Object.values(byDay).forEach((dayNaps) => {
+    dayNaps.sort((a, b) => new Date(a.start) - new Date(b.start));
+    const idx = nextNapIndex - 1;
+    if (idx <= 0 || idx >= dayNaps.length) return;
+    const wakeMin = (new Date(dayNaps[idx].start) - new Date(dayNaps[idx - 1].end)) / 60000;
+    if (wakeMin > 20 && wakeMin < 360) sameIndexWindows.push(wakeMin);
+  });
+
+  const sameIndexWindow = median(sameIndexWindows);
+  const lastNap = naps[naps.length - 1];
+  const lastNapDuration = lastNap ? lastNap.durationMin : 60;
+  const napRecoveryAdjustment = lastNapDuration < 50 ? -15 : (lastNapDuration > 100 ? 12 : 0);
+
+  const hour = wakeTime.getHours();
+  const timeOfDayAdjustment = hour >= 18 ? -15 : (hour <= 7 ? -10 : 0);
+
+  const blendedWindow = (
+    (baseByIndex * 0.4)
+    + ((recentWindow ?? DEFAULT_WAKE_WINDOW_MIN) * 0.35)
+    + ((sameIndexWindow ?? baseByIndex) * 0.25)
+    + napRecoveryAdjustment
+    + timeOfDayAdjustment
+  );
+
+  const wakeWindowMin = clampMinutes(blendedWindow, MIN_WAKE_WINDOW_MIN, MAX_WAKE_WINDOW_MIN);
+  const spreadMin = sameIndexWindow ? 10 : 15;
+
+  return {
+    wakeWindowMin,
+    source: `${BABY_PROFILE} sweet spot · nap #${nextNapIndex}`,
+    sweetSpotStart: new Date(wakeTime.getTime() + (wakeWindowMin - spreadMin) * 60000),
+    sweetSpotEnd: new Date(wakeTime.getTime() + (wakeWindowMin + spreadMin) * 60000)
+  };
+}
+
+function parseStoredPrediction() {
+  const stored = localStorage.getItem(PRED_KEY);
+  if (!stored) return null;
+
+  try {
+    const parsed = JSON.parse(stored);
+    if (parsed && parsed.time) {
+      return {
+        predicted: new Date(parsed.time),
+        wakeWindowMin: parsed.wakeWindowMin,
+        source: parsed.source || '',
+        sweetSpotStart: parsed.sweetSpotStart ? new Date(parsed.sweetSpotStart) : null,
+        sweetSpotEnd: parsed.sweetSpotEnd ? new Date(parsed.sweetSpotEnd) : null
+      };
+    }
+  } catch (_) {
+    return { predicted: new Date(stored), wakeWindowMin: null, source: '', sweetSpotStart: null, sweetSpotEnd: null };
+  }
+
+  return { predicted: new Date(stored), wakeWindowMin: null, source: '', sweetSpotStart: null, sweetSpotEnd: null };
+}
+
 function runPrediction(wakeTime) {
-  const pred = new Date(wakeTime.getTime() + 110 * 60000);
-  localStorage.setItem(PRED_KEY, pred.toISOString());
+  const { wakeWindowMin, source, sweetSpotStart, sweetSpotEnd } = calculateWakeWindow(wakeTime);
+  const pred = new Date(wakeTime.getTime() + wakeWindowMin * 60000);
+
+  localStorage.setItem(PRED_KEY, JSON.stringify({
+    time: pred.toISOString(),
+    wakeWindowMin,
+    source,
+    sweetSpotStart: sweetSpotStart.toISOString(),
+    sweetSpotEnd: sweetSpotEnd.toISOString(),
+    calculatedAt: new Date().toISOString()
+  }));
+
+  const sweetRangeText = `${sweetSpotStart.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}–${sweetSpotEnd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
   document.getElementById('heroPrediction').innerText = pred.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  document.getElementById('heroAccuracy').innerText = `Sweet spot: ${sweetRangeText} · ${source}`;
 }
 
 function evaluatePrediction(actualSleepStart) {
-  const stored = localStorage.getItem(PRED_KEY);
-  if (!stored) return;
-  const predicted = new Date(stored);
-  const diffMin = Math.round(Math.abs(actualSleepStart - predicted) / 60000);
+  const prediction = parseStoredPrediction();
+  if (!prediction || isNaN(prediction.predicted)) return;
+
+  const diffMin = Math.round(Math.abs(actualSleepStart - prediction.predicted) / 60000);
   let text = '';
   if (diffMin <= 5) text = 'Very accurate';
   else if (diffMin <= 10) text = 'Accurate';
   else text = 'Off';
-  document.getElementById('heroAccuracy').innerText = `Prediction: ${text}`;
+
+  const inSweetSpot = prediction.sweetSpotStart && prediction.sweetSpotEnd
+    ? (actualSleepStart >= prediction.sweetSpotStart && actualSleepStart <= prediction.sweetSpotEnd)
+    : false;
+  const sweetSpotLabel = inSweetSpot ? ' · In sweet spot ✓' : '';
+  const wakeWindowLabel = prediction.wakeWindowMin ? ` · window ${prediction.wakeWindowMin} min` : '';
+  document.getElementById('heroAccuracy').innerText = `Prediction: ${text} (${diffMin} min gap)${wakeWindowLabel}${sweetSpotLabel}`;
 }
 
 function isNightSleep(start, end) {
@@ -296,6 +471,7 @@ function exportCSV() {
 }
 
 renderHistory();
+updateSleepButtonState();
 if (sleepHistory.length > 0) {
   const last = sleepHistory[sleepHistory.length - 1];
   if (last && last.end) runPrediction(new Date(last.end));
