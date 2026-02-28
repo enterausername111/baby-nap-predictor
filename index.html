@@ -50,8 +50,7 @@
 <section class="now">
   <div class="module-title">NOW</div>
   <div class="row">
-    <button class="primary-btn" onclick="startSleep()">▶︎ Start</button>
-    <button class="secondary-btn" onclick="endSleep()">⏹ Wake</button>
+    <button id="sleepToggleBtn" class="primary-btn" onclick="toggleSleep()">▶︎ Start</button>
   </div>
 
   <div id="liveTimer" class="stopwatch" style="display:none">
@@ -93,11 +92,33 @@
 <script>
 const HISTORY_KEY = 'sleep_history_ui_v9';
 const PRED_KEY = 'last_prediction_ui_v9';
+const DEFAULT_WAKE_WINDOW_MIN = 110;
+const MIN_WAKE_WINDOW_MIN = 60;
+const MAX_WAKE_WINDOW_MIN = 210;
 
 let sleepHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
 let activeSleepStart = null;
 let timer = null;
 let editingIndex = null;
+
+function updateSleepButtonState() {
+  const btn = document.getElementById('sleepToggleBtn');
+  if (!btn) return;
+  if (activeSleepStart) {
+    btn.classList.remove('primary-btn');
+    btn.classList.add('secondary-btn');
+    btn.innerText = '⏹ Wake';
+  } else {
+    btn.classList.remove('secondary-btn');
+    btn.classList.add('primary-btn');
+    btn.innerText = '▶︎ Start';
+  }
+}
+
+function toggleSleep() {
+  if (activeSleepStart) endSleep();
+  else startSleep();
+}
 
 function startSleep() {
   if (activeSleepStart) return;
@@ -108,6 +129,7 @@ function startSleep() {
   document.getElementById('liveTimer').style.display = 'block';
   timer = setInterval(updateTimer, 1000);
   updateTimer();
+  updateSleepButtonState();
 }
 
 function updateTimer() {
@@ -140,6 +162,7 @@ function endSleep() {
   const end = new Date();
   activeSleepStart = null;
   document.getElementById('liveTimer').style.display = 'none';
+  updateSleepButtonState();
   commitSleep(start, end);
 }
 
@@ -215,22 +238,103 @@ function commitSleep(start, end) {
   runPrediction(end);
 }
 
+function clampMinutes(value, min, max) {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function getNapHistoryBefore(referenceTime) {
+  return sleepHistory
+    .filter((entry) => !isNightSleep(entry.start, entry.end))
+    .filter((entry) => new Date(entry.end) <= referenceTime)
+    .sort((a, b) => new Date(a.end) - new Date(b.end));
+}
+
+function calculateWakeWindow(wakeTime) {
+  const naps = getNapHistoryBefore(wakeTime);
+  if (!naps.length) {
+    return {
+      wakeWindowMin: DEFAULT_WAKE_WINDOW_MIN,
+      source: 'Default window (no nap history yet)'
+    };
+  }
+
+  const recentNaps = naps.slice(-5);
+  const avgNapDuration = recentNaps.reduce((sum, nap) => sum + nap.durationMin, 0) / recentNaps.length;
+  const napLengthAdjustment = (avgNapDuration - 60) * 0.35;
+
+  const recentWakeWindows = [];
+  for (let i = 1; i < naps.length; i += 1) {
+    const prevWake = new Date(naps[i - 1].end).getTime();
+    const nextSleep = new Date(naps[i].start).getTime();
+    const wakeWindow = (nextSleep - prevWake) / 60000;
+    if (wakeWindow > 20 && wakeWindow < 360) recentWakeWindows.push(wakeWindow);
+  }
+  const historyWakeWindow = recentWakeWindows.length
+    ? recentWakeWindows.slice(-4).reduce((sum, value) => sum + value, 0) / Math.min(recentWakeWindows.length, 4)
+    : DEFAULT_WAKE_WINDOW_MIN;
+
+  const napsToday = naps.filter((nap) => {
+    const d = new Date(nap.end);
+    return d.toDateString() === wakeTime.toDateString();
+  }).length;
+  const dayProgressAdjustment = napsToday * 10;
+
+  const blendedWindow = (historyWakeWindow * 0.55) + (DEFAULT_WAKE_WINDOW_MIN * 0.45) + napLengthAdjustment + dayProgressAdjustment;
+  const wakeWindowMin = clampMinutes(blendedWindow, MIN_WAKE_WINDOW_MIN, MAX_WAKE_WINDOW_MIN);
+
+  return {
+    wakeWindowMin,
+    source: `Adaptive window from recent naps (avg ${Math.round(avgNapDuration)} min)`
+  };
+}
+
+function parseStoredPrediction() {
+  const stored = localStorage.getItem(PRED_KEY);
+  if (!stored) return null;
+
+  try {
+    const parsed = JSON.parse(stored);
+    if (parsed && parsed.time) {
+      return {
+        predicted: new Date(parsed.time),
+        wakeWindowMin: parsed.wakeWindowMin,
+        source: parsed.source || ''
+      };
+    }
+  } catch (_) {
+    return { predicted: new Date(stored), wakeWindowMin: null, source: '' };
+  }
+
+  return { predicted: new Date(stored), wakeWindowMin: null, source: '' };
+}
+
 function runPrediction(wakeTime) {
-  const pred = new Date(wakeTime.getTime() + 110 * 60000);
-  localStorage.setItem(PRED_KEY, pred.toISOString());
+  const { wakeWindowMin, source } = calculateWakeWindow(wakeTime);
+  const pred = new Date(wakeTime.getTime() + wakeWindowMin * 60000);
+
+  localStorage.setItem(PRED_KEY, JSON.stringify({
+    time: pred.toISOString(),
+    wakeWindowMin,
+    source,
+    calculatedAt: new Date().toISOString()
+  }));
+
   document.getElementById('heroPrediction').innerText = pred.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  document.getElementById('heroAccuracy').innerText = `Wake window: ${wakeWindowMin} min · ${source}`;
 }
 
 function evaluatePrediction(actualSleepStart) {
-  const stored = localStorage.getItem(PRED_KEY);
-  if (!stored) return;
-  const predicted = new Date(stored);
-  const diffMin = Math.round(Math.abs(actualSleepStart - predicted) / 60000);
+  const prediction = parseStoredPrediction();
+  if (!prediction || isNaN(prediction.predicted)) return;
+
+  const diffMin = Math.round(Math.abs(actualSleepStart - prediction.predicted) / 60000);
   let text = '';
   if (diffMin <= 5) text = 'Very accurate';
   else if (diffMin <= 10) text = 'Accurate';
   else text = 'Off';
-  document.getElementById('heroAccuracy').innerText = `Prediction: ${text}`;
+
+  const wakeWindowLabel = prediction.wakeWindowMin ? ` · window ${prediction.wakeWindowMin} min` : '';
+  document.getElementById('heroAccuracy').innerText = `Prediction: ${text} (${diffMin} min gap)${wakeWindowLabel}`;
 }
 
 function isNightSleep(start, end) {
@@ -296,6 +400,7 @@ function exportCSV() {
 }
 
 renderHistory();
+updateSleepButtonState();
 if (sleepHistory.length > 0) {
   const last = sleepHistory[sleepHistory.length - 1];
   if (last && last.end) runPrediction(new Date(last.end));
