@@ -93,10 +93,9 @@
 <script>
 const HISTORY_KEY = 'sleep_history_ui_v9';
 const PRED_KEY = 'last_prediction_ui_v9';
-const BABY_PROFILE = '6 months';
-const DEFAULT_WAKE_WINDOW_MIN = 150;
-const MIN_WAKE_WINDOW_MIN = 105;
-const MAX_WAKE_WINDOW_MIN = 220;
+const DEFAULT_WAKE_WINDOW_MIN = 110;
+const MIN_WAKE_WINDOW_MIN = 60;
+const MAX_WAKE_WINDOW_MIN = 210;
 
 let sleepHistory = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
 let activeSleepStart = null;
@@ -276,26 +275,18 @@ function getNapHistoryBefore(referenceTime) {
     .sort((a, b) => new Date(a.end) - new Date(b.end));
 }
 
-function average(values) {
-  if (!values.length) return null;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function median(values) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
 function calculateWakeWindow(wakeTime) {
   const naps = getNapHistoryBefore(wakeTime);
-  const napsToday = naps.filter((nap) => new Date(nap.end).toDateString() === wakeTime.toDateString());
-  const nextNapIndex = napsToday.length + 1;
+  if (!naps.length) {
+    return {
+      wakeWindowMin: DEFAULT_WAKE_WINDOW_MIN,
+      source: 'Default window (no nap history yet)'
+    };
+  }
 
-  // 6-month profile: usually ~3 naps with ~2h to 3h40 wake windows
-  const sweetSpotByNapIndex = [120, 150, 180, 195];
-  const baseByIndex = sweetSpotByNapIndex[Math.min(nextNapIndex - 1, sweetSpotByNapIndex.length - 1)] || DEFAULT_WAKE_WINDOW_MIN;
+  const recentNaps = naps.slice(-5);
+  const avgNapDuration = recentNaps.reduce((sum, nap) => sum + nap.durationMin, 0) / recentNaps.length;
+  const napLengthAdjustment = (avgNapDuration - 60) * 0.35;
 
   const recentWakeWindows = [];
   for (let i = 1; i < naps.length; i += 1) {
@@ -304,49 +295,22 @@ function calculateWakeWindow(wakeTime) {
     const wakeWindow = (nextSleep - prevWake) / 60000;
     if (wakeWindow > 20 && wakeWindow < 360) recentWakeWindows.push(wakeWindow);
   }
+  const historyWakeWindow = recentWakeWindows.length
+    ? recentWakeWindows.slice(-4).reduce((sum, value) => sum + value, 0) / Math.min(recentWakeWindows.length, 4)
+    : DEFAULT_WAKE_WINDOW_MIN;
 
-  const recentWindow = average(recentWakeWindows.slice(-4));
+  const napsToday = naps.filter((nap) => {
+    const d = new Date(nap.end);
+    return d.toDateString() === wakeTime.toDateString();
+  }).length;
+  const dayProgressAdjustment = napsToday * 10;
 
-  const byDay = {};
-  naps.forEach((nap) => {
-    const dayKey = new Date(nap.start).toDateString();
-    if (!byDay[dayKey]) byDay[dayKey] = [];
-    byDay[dayKey].push(nap);
-  });
-
-  const sameIndexWindows = [];
-  Object.values(byDay).forEach((dayNaps) => {
-    dayNaps.sort((a, b) => new Date(a.start) - new Date(b.start));
-    const idx = nextNapIndex - 1;
-    if (idx <= 0 || idx >= dayNaps.length) return;
-    const wakeMin = (new Date(dayNaps[idx].start) - new Date(dayNaps[idx - 1].end)) / 60000;
-    if (wakeMin > 20 && wakeMin < 360) sameIndexWindows.push(wakeMin);
-  });
-
-  const sameIndexWindow = median(sameIndexWindows);
-  const lastNap = naps[naps.length - 1];
-  const lastNapDuration = lastNap ? lastNap.durationMin : 60;
-  const napRecoveryAdjustment = lastNapDuration < 50 ? -15 : (lastNapDuration > 100 ? 12 : 0);
-
-  const hour = wakeTime.getHours();
-  const timeOfDayAdjustment = hour >= 18 ? -15 : (hour <= 7 ? -10 : 0);
-
-  const blendedWindow = (
-    (baseByIndex * 0.4)
-    + ((recentWindow ?? DEFAULT_WAKE_WINDOW_MIN) * 0.35)
-    + ((sameIndexWindow ?? baseByIndex) * 0.25)
-    + napRecoveryAdjustment
-    + timeOfDayAdjustment
-  );
-
+  const blendedWindow = (historyWakeWindow * 0.55) + (DEFAULT_WAKE_WINDOW_MIN * 0.45) + napLengthAdjustment + dayProgressAdjustment;
   const wakeWindowMin = clampMinutes(blendedWindow, MIN_WAKE_WINDOW_MIN, MAX_WAKE_WINDOW_MIN);
-  const spreadMin = sameIndexWindow ? 10 : 15;
 
   return {
     wakeWindowMin,
-    source: `${BABY_PROFILE} sweet spot · nap #${nextNapIndex}`,
-    sweetSpotStart: new Date(wakeTime.getTime() + (wakeWindowMin - spreadMin) * 60000),
-    sweetSpotEnd: new Date(wakeTime.getTime() + (wakeWindowMin + spreadMin) * 60000)
+    source: `Adaptive window from recent naps (avg ${Math.round(avgNapDuration)} min)`
   };
 }
 
@@ -360,34 +324,29 @@ function parseStoredPrediction() {
       return {
         predicted: new Date(parsed.time),
         wakeWindowMin: parsed.wakeWindowMin,
-        source: parsed.source || '',
-        sweetSpotStart: parsed.sweetSpotStart ? new Date(parsed.sweetSpotStart) : null,
-        sweetSpotEnd: parsed.sweetSpotEnd ? new Date(parsed.sweetSpotEnd) : null
+        source: parsed.source || ''
       };
     }
   } catch (_) {
-    return { predicted: new Date(stored), wakeWindowMin: null, source: '', sweetSpotStart: null, sweetSpotEnd: null };
+    return { predicted: new Date(stored), wakeWindowMin: null, source: '' };
   }
 
-  return { predicted: new Date(stored), wakeWindowMin: null, source: '', sweetSpotStart: null, sweetSpotEnd: null };
+  return { predicted: new Date(stored), wakeWindowMin: null, source: '' };
 }
 
 function runPrediction(wakeTime) {
-  const { wakeWindowMin, source, sweetSpotStart, sweetSpotEnd } = calculateWakeWindow(wakeTime);
+  const { wakeWindowMin, source } = calculateWakeWindow(wakeTime);
   const pred = new Date(wakeTime.getTime() + wakeWindowMin * 60000);
 
   localStorage.setItem(PRED_KEY, JSON.stringify({
     time: pred.toISOString(),
     wakeWindowMin,
     source,
-    sweetSpotStart: sweetSpotStart.toISOString(),
-    sweetSpotEnd: sweetSpotEnd.toISOString(),
     calculatedAt: new Date().toISOString()
   }));
 
-  const sweetRangeText = `${sweetSpotStart.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}–${sweetSpotEnd.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`;
   document.getElementById('heroPrediction').innerText = pred.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-  document.getElementById('heroAccuracy').innerText = `Sweet spot: ${sweetRangeText} · ${source}`;
+  document.getElementById('heroAccuracy').innerText = `Wake window: ${wakeWindowMin} min · ${source}`;
 }
 
 function evaluatePrediction(actualSleepStart) {
@@ -400,12 +359,8 @@ function evaluatePrediction(actualSleepStart) {
   else if (diffMin <= 10) text = 'Accurate';
   else text = 'Off';
 
-  const inSweetSpot = prediction.sweetSpotStart && prediction.sweetSpotEnd
-    ? (actualSleepStart >= prediction.sweetSpotStart && actualSleepStart <= prediction.sweetSpotEnd)
-    : false;
-  const sweetSpotLabel = inSweetSpot ? ' · In sweet spot ✓' : '';
   const wakeWindowLabel = prediction.wakeWindowMin ? ` · window ${prediction.wakeWindowMin} min` : '';
-  document.getElementById('heroAccuracy').innerText = `Prediction: ${text} (${diffMin} min gap)${wakeWindowLabel}${sweetSpotLabel}`;
+  document.getElementById('heroAccuracy').innerText = `Prediction: ${text} (${diffMin} min gap)${wakeWindowLabel}`;
 }
 
 function isNightSleep(start, end) {
