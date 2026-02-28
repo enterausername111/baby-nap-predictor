@@ -73,10 +73,11 @@
   <details id="manualDetails" style="margin-top:12px">
     <summary style="font-weight:600;cursor:pointer">✍️ Manual entry</summary>
     <label>Sleep start</label>
-    <input type="datetime-local" id="manualStart" />
+    <input type="time" id="manualStart" />
     <label>Wake time</label>
-    <input type="datetime-local" id="manualEnd" />
+    <input type="time" id="manualEnd" />
     <button type="button" onclick="saveManual()">Save manual sleep</button>
+    <div class="hint">Only time is needed. Date defaults to today.</div>
     <div id="manualFeedback" class="hint"></div>
   </details>
 </section>
@@ -166,6 +167,24 @@ function endSleep() {
   commitSleep(start, end);
 }
 
+function parseTimeInputToDate(timeValue, baseDate = new Date()) {
+  const [hourText, minuteText] = timeValue.split(':');
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+
+  const date = new Date(baseDate);
+  date.setHours(hour, minute, 0, 0);
+  return date;
+}
+
+function formatDateForTimeInput(dateValue) {
+  const d = new Date(dateValue);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 function saveManual() {
   try {
     const s = document.getElementById('manualStart').value;
@@ -175,11 +194,18 @@ function saveManual() {
       return;
     }
 
-    const start = new Date(s);
-    const end = new Date(e);
-    if (isNaN(start) || isNaN(end) || end <= start) {
-      alert('Invalid time range');
+    const editBaseDate = editingIndex !== null
+      ? new Date(sleepHistory[editingIndex].start)
+      : new Date();
+    const start = parseTimeInputToDate(s, editBaseDate);
+    const end = parseTimeInputToDate(e, editBaseDate);
+    if (!start || !end) {
+      alert('Invalid time format');
       return;
+    }
+
+    if (end <= start) {
+      end.setDate(end.getDate() + 1);
     }
 
     // evaluate prediction at sleep START
@@ -216,8 +242,8 @@ function saveManual() {
 
 function editSleep(index) {
   const e = sleepHistory[index];
-  document.getElementById('manualStart').value = e.start.slice(0,16);
-  document.getElementById('manualEnd').value = e.end.slice(0,16);
+  document.getElementById('manualStart').value = formatDateForTimeInput(e.start);
+  document.getElementById('manualEnd').value = formatDateForTimeInput(e.end);
   document.getElementById('manualDetails').open = true;
   editingIndex = index;
 }
